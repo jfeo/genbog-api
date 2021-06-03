@@ -38,3 +38,11 @@ command in the virtual environment
 Run the tests simply by executing `pytest` in the virtual environment.
 
     (venv) $ pytest
+
+## Linting
+
+
+The project expects a perfect score from `pylint`, to ensure a uniform style.
+Run `pylint` in the virtual environment with:
+
+    (venv) $ pylint genbog
