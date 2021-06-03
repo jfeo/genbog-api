@@ -1,65 +1,70 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, json
+from werkzeug.exceptions import InternalServerError, HTTPException
+
+from repository import InMemoryRepository
+from util import ISBNConverter, parse_isbn, ApplicationError
 
 app = Flask(__name__)
+app.url_map.converters['isbn'] = ISBNConverter
+
+repository = InMemoryRepository()
 
 
-def validate_isbn(isbn: str):
-    return len(isbn) == 13 and isbn.isdigit()
+@app.route("/books/<isbn:isbn>", methods=["GET"])
+def get_book(isbn):
+    return jsonify({"isbn": isbn, "count": repository.count(isbn)}), 200
 
 
-isbns = {}
+@app.route("/books/<isbn:isbn>", methods=["POST"])
+def post_book(isbn):
+    repository.add(isbn)
+    return jsonify({"isbn": isbn, "count": repository.count(isbn)})
 
 
-def add_book(isbn):
-    if isbn in isbns:
-        isbns[isbn] += 1
-    else:
-        isbns[isbn] = 1
+@app.route("/books/<isbn:isbn>", methods=["DELETE"])
+def delete_book(isbn):
+    repository.remove(isbn)
+    return jsonify({"isbn": isbn, "count": repository.count(isbn)}), 200
 
 
-def remove_book(isbn):
-    if isbn in isbns:
-        if isbns[isbn] == 1:
-            del isbns[isbn]
-        else:
-            isbns[isbn] -= 1
+@app.route("/books", methods=["GET"])
+def get_books():
+    return jsonify([{
+        "isbn": isbn,
+        "count": count
+    } for isbn, count in repository.list_all()]), 200
 
 
-@app.route("/books/<isbn>", methods=["GET", "POST", "DELETE"])
-def book(isbn):
-    if not validate_isbn(isbn):
-        return jsonify({"error": "Invalid ISBN"}), 400
-    if request.method == "GET":
-        if isbn in isbns:
-            return jsonify({"isbn": isbn, "count": isbns[isbn]}), 200
-        else:
-            return jsonify({"error": "ISBN not found", "isbn": isbn}), 404
-    elif request.method == "POST":
-        add_book(isbn)
-        return jsonify({"isbn": isbn, "count": isbns[isbn]})
-    elif request.method == "DELETE":
-        remove_book(isbn)
-        return jsonify({"isbn": isbn, "count": isbns[isbn] if isbn in isbns else 0})
-    else:
-        return jsonify({"error": "Not yet implemented"}), 500
+@app.route("/books", methods=["POST"])
+def post_books():
+    request_isbns = request.get_json(force=False, silent=False, cache=False)
+    for isbn in map(parse_isbn, request_isbns):
+        repository.add(isbn)
+    return jsonify([{
+        "isbn": isbn,
+        "count": repository.count(isbn)
+    } for isbn in request_isbns]), 200
 
 
-@app.route("/books", methods=["GET", "POST"])
-def books():
-    if request.method == "GET":
-        bs = [{"isbn": isbn, "count": count} for isbn, count in isbns.items()]
-        return jsonify(bs), 200
-    elif request.method == "POST":
-        request_isbns = request.get_json(force=False, silent=False, cache=False)
-        for isbn in request_isbns:
-            if not validate_isbn(isbn):
-                return jsonify({"error": "Invalid ISBN", "isbn": isbn}), 400
-        for isbn in request_isbns:
-            add_book(isbn)
-        return jsonify([{"isbn": isbn, "count": isbns[isbn]}
-                        for isbn in request_isbns]), 200
+@app.errorhandler(InternalServerError)
+def handle_500(e):
+    if not hasattr(e, 'original_exception'):
+        return jsonify({"error": "An internal server error occured"}), 500
+
+    if isinstance(e.original_exception, ApplicationError):
+        return jsonify(e.original_exception.data), 400
+
+    return jsonify({"error": repr(e.original_exception)}), 500
 
 
-@app.errorhandler(404)
-def handle_404(err):
-    return 404, "Not Found"
+@app.errorhandler(HTTPException)
+def handle_http_exception(e):
+    response = e.get_response()
+    # replace the body with JSON
+    response.data = json.dumps({
+        "code": e.code,
+        "name": e.name,
+        "description": e.description,
+    })
+    response.content_type = "application/json"
+    return response
